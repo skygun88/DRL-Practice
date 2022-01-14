@@ -53,7 +53,7 @@ images = []
 
 action_map = {0:0, 1:2, 2:3}
 model = DQN(n_action)
-model.load_state_dict(torch.load(f'Weight/DQN_breakout_30.pt'))
+model.load_state_dict(torch.load(f'Weight/DQN_breakout_99.pt'))
 model.eval()
 
 video = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 60, (160, 210))
@@ -74,9 +74,7 @@ for epoch in range(max_epoch):
         env.render()
         time.sleep(time_interval)
     
-    while True:
-        # images.append(observation)
-        
+    while True:       
         video.write(cv2.cvtColor(observation, cv2.COLOR_BGR2RGB))
         if len(history) < 4:
             if len(history) < 1:

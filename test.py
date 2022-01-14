@@ -21,7 +21,7 @@ def atari_preprocessing(state):
     state_img = state_img.crop((0, 110-84, 84, 110))
     return torch.Tensor(np.array(state_img)/255)
 
-def train_minibatch(model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
+def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     optimizer.zero_grad()
     states = torch.stack(list(map(lambda x: x[0], minibatch))).squeeze()
     actions = list(map(lambda x: x[1], minibatch))
@@ -31,31 +31,12 @@ def train_minibatch(model: DQN, minibatch, optimizer: optim.RMSprop, gamma: floa
     dones = torch.tensor(list(map(lambda x: 1 if x[4] == True or x[2] < 0 else 0, minibatch)))
 
     q_values = torch.sum(model(states.cuda())*one_hot_actions.cuda(), 1)
-    ys = rewards.cuda() + (1-dones.cuda())*gamma*torch.amax(model(next_states.cuda()), 1)
+    ys = rewards.cuda() + (1-dones.cuda())*gamma*torch.amax(target_model(next_states.detach().cuda()).detach(), 1)
 
     loss = torch.mean(torch.pow(ys-q_values, 2))
     loss.backward()
     optimizer.step()
-    return model
-
-# def train_minibatch(model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
-#     states = list(map(lambda x: x[0], minibatch))
-#     actions = list(map(lambda x: x[1], minibatch))
-#     rewards = list(map(lambda x: x[2], minibatch))
-#     next_states = list(map(lambda x: x[3], minibatch))
-#     dones = list(map(lambda x: x[4], minibatch))
-
-#     optimizer.zero_grad()
-#     q_values = list(map(lambda state, action: model(state.cuda())[0, action], states, actions))
-#     q_values_stack = torch.stack(q_values, dim=0)
-
-#     ys = list(map(lambda reward, next_state, done: torch.tensor(reward).cuda() if done or reward < 0 else torch.tensor(reward).cuda() + gamma*torch.max(model(next_state.cuda())), rewards, next_states, dones))
-#     ys_stack = torch.stack(ys, dim=0)
-
-#     loss = torch.mean(torch.pow(ys_stack-q_values_stack, 2))
-#     loss.backward()
-#     optimizer.step()
-#     return model
+    return loss
 
 def reward_processing(reward, dead):
     if reward > 0:
@@ -68,6 +49,7 @@ def is_dead(info, prev_lives):
     if info['lives'] < prev_lives:
         return True
     return False
+
 
 env = gym.make('BreakoutDeterministic-v4')
 env.reset()
@@ -96,14 +78,17 @@ learning_rate = 0.001
 gamma = 0.99
 n_action = env.action_space.n - 1
 history = [] # state - 4 skip frames
-
+loss = 0
+loss_sum = 0
+q_values = 0 
 
 action_map = {0:0, 1:2, 2:3}
 model = DQN(n_action)
+target_model = DQN(n_action)
+target_model.load_state_dict(model.state_dict())
 
 optimizer = optim.RMSprop(model.parameters(), lr=learning_rate)
 eval_results = []
-
 
 for epoch in range(max_epoch):
     ''' Training Phase '''
@@ -114,6 +99,9 @@ for epoch in range(max_epoch):
     prev_lives = 5
     timestep = 0
     minibatch_cnt = 0
+    loss_sum = 0
+    q_value_sum = 0 
+    dead = False
 
     if render:
         env.render()
@@ -130,8 +118,17 @@ for epoch in range(max_epoch):
             continue
         
         state = torch.stack(history, dim=0).unsqueeze(0)
+
+        if dead:
+            observation, _, _, _ = env.step(1) # Initial Fire
+            frame = atari_preprocessing(observation)
+            history.pop(0)
+            history.append(frame)
+            dead = False
+            continue
         
         ''' action selection '''
+        
         if random.random() < epsilon: 
             action = random.randint(0, n_action-1)
         else:
@@ -141,7 +138,6 @@ for epoch in range(max_epoch):
                 output = model(state)
             action = torch.argmax(output).item()
         real_action = action_map[action]
-
 
         ''' Environment update '''
         observation, reward, done, info = env.step(real_action)
@@ -166,15 +162,17 @@ for epoch in range(max_epoch):
         
         if len(replay_memory) > train_start:
             minibatch = random.sample(replay_memory, minibatch_size)
-            model = train_minibatch(model=model, minibatch=minibatch, optimizer=optimizer, gamma=gamma)
+            loss = train_minibatch(model=model, target_model=target_model, minibatch=minibatch, optimizer=optimizer, gamma=gamma)
             minibatch_cnt += 1
+            loss_sum += loss
 
         ''' Training parameter update '''
         prev_lives = info['lives']
         timestep += 1
 
         if timestep % 1000 == 0:
-            print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}')
+            print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}, q_value_sum = {q_value_sum}')
+            target_model.load_state_dict(model.state_dict())
 
         if epsilon_bound < epsilon:
             epsilon = max(epsilon - epsilon_degrade, epsilon_bound)
@@ -182,8 +180,6 @@ for epoch in range(max_epoch):
         if minibatch_cnt == minibatch_train:
             break
 
-        if dead:
-            history.clear()
 
         if done:
             history.clear()
@@ -201,6 +197,9 @@ for epoch in range(max_epoch):
     prev_lives = 5
     eval_timestep = 0
     epi_rewards = []
+    epi_q_values = []
+    q_value_sum = 0
+    dead = False
 
     if render:
         env.render()
@@ -218,17 +217,26 @@ for epoch in range(max_epoch):
         
         state = torch.stack(history, dim=0).unsqueeze(0)
 
+        if dead:
+            observation, _, _, _ = env.step(1) # Initial Fire
+            frame = atari_preprocessing(observation)
+            history.pop(0)
+            history.append(frame)
+            dead = False
+            continue
+
         ''' action selection '''
-        if random.random() < epsilon_eval: 
+        if torch.cuda.is_available():
+            output = model(state.cuda())
+        else:
+            output = model(state)
+        if random.random() < epsilon: 
             action = random.randint(0, n_action-1)
-        else: 
-            if torch.cuda.is_available():
-                output = model(state.cuda())
-            else:
-                output = model(state)
+        else:
             action = torch.argmax(output).item()
         real_action = action_map[action]
-
+        q_value = output[0, action].item()
+        q_value_sum += q_value
 
         ''' Environment update '''
         observation, reward, done, info = env.step(real_action)
@@ -237,7 +245,6 @@ for epoch in range(max_epoch):
             time.sleep(time_interval)
         
         dead = is_dead(info, prev_lives=prev_lives)
-        reward = reward_processing(reward, dead)
         reward_sum += reward
 
         ''' Next state '''
@@ -252,20 +259,26 @@ for epoch in range(max_epoch):
         if eval_timestep >= eval_max_timestep:
             break     
 
-        if dead:
-            history.clear()
 
         if done:
             history.clear()
             env.reset()
             prev_lives = 5
             epi_rewards.append(reward_sum)
+            epi_q_values.append(q_value_sum)
             reward_sum = 0
             continue
 
-    print(f"[Validation] Epoch: {epoch}, episode reward: {sum(epi_rewards)/len(epi_rewards)}, epsilon: {epsilon}")
-    eval_results.append(reward_sum)
+    avg_epi_rewards = sum(epi_rewards)/len(epi_rewards)
+    avg_epi_q_values = sum(epi_q_values)/len(epi_q_values)
+    print(f"[Validation] Epoch: {epoch}, episode reward: {avg_epi_rewards}, episode q_value: {avg_epi_q_values}, epsilon: {epsilon}")
+    eval_results.append((avg_epi_rewards, avg_epi_q_values))
 
-
-plt.plot(eval_results)
+plt.plot(eval_results[0])
+plt.plot(eval_results[1])
 plt.show()
+
+with open('output_log.csv', 'w') as f:
+    text_string = list(map(lambda x: f'{x[0]}, {x[1]}', eval_results))
+    f.write('\n'.join(text_string))
+    f.close()
