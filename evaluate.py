@@ -38,14 +38,13 @@ print(env.action_space)
 print(env.observation_space.dtype, env.observation_space._shape)
 
 max_timestep = 10000000
-max_epoch = 5
-epsilon_eval = 0.05
+max_epoch = 1
+epsilon_eval = 0.01
 eval_timestep = 0
-eval_max_timestep = 1000
+eval_max_timestep = 10000
 render = False
 time_interval = 0.01
 learning_rate = 0.001
-gamma = 0.99
 n_action = env.action_space.n - 1
 history = [] # state - 4 skip frames
 images = []
@@ -56,7 +55,7 @@ model = DQN(n_action)
 model.load_state_dict(torch.load(f'Weight/DQN_breakout_99.pt'))
 model.eval()
 
-video = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 60, (160, 210))
+video = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30, (160, 210))
 
 eval_results = []
 
@@ -114,7 +113,6 @@ for epoch in range(max_epoch):
             time.sleep(time_interval)
         
         dead = is_dead(info, prev_lives=prev_lives)
-        reward = reward_processing(reward, dead)
         reward_sum += reward
 
         ''' Next state '''

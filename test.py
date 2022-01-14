@@ -35,6 +35,8 @@ def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.R
 
     loss = torch.mean(torch.pow(ys-q_values, 2))
     loss.backward()
+    max_norm = 1.0
+    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
     optimizer.step()
     return loss
 
@@ -74,8 +76,9 @@ eval_timestep = 0
 eval_max_timestep = 10000
 render = False
 time_interval = 0.01
-learning_rate = 0.001
+learning_rate = 0.0001
 gamma = 0.99
+target_interval = 10000
 n_action = env.action_space.n - 1
 history = [] # state - 4 skip frames
 loss = 0
@@ -107,7 +110,7 @@ for epoch in range(max_epoch):
         env.render()
         time.sleep(time_interval)
 
-    while True:
+    while minibatch_cnt < minibatch_train:
         if len(history) < 4:
             if len(history) < 1:
                 observation, _, _, _ = env.step(1) # Initial Fire
@@ -117,8 +120,7 @@ for epoch in range(max_epoch):
             history.append(frame)
             continue
         
-        state = torch.stack(history, dim=0).unsqueeze(0)
-
+    
         if dead:
             observation, _, _, _ = env.step(1) # Initial Fire
             frame = atari_preprocessing(observation)
@@ -127,16 +129,18 @@ for epoch in range(max_epoch):
             dead = False
             continue
         
+        state = torch.stack(history, dim=0).unsqueeze(0)
+
         ''' action selection '''
-        
-        if random.random() < epsilon: 
-            action = random.randint(0, n_action-1)
-        else:
-            if torch.cuda.is_available():
-                output = model(state.cuda())
+        with torch.no_grad():
+            if random.random() < epsilon: 
+                action = random.randint(0, n_action-1)
             else:
-                output = model(state)
-            action = torch.argmax(output).item()
+                if torch.cuda.is_available():
+                    output = model(state.cuda())
+                else:
+                    output = model(state)
+                action = torch.argmax(output).item()
         real_action = action_map[action]
 
         ''' Environment update '''
@@ -171,14 +175,15 @@ for epoch in range(max_epoch):
         timestep += 1
 
         if timestep % 1000 == 0:
-            print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}, q_value_sum = {q_value_sum}')
+            print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}')
+            
+        ''' target model update '''
+        if time_interval % target_interval:
             target_model.load_state_dict(model.state_dict())
 
+        ''' epsilon update '''
         if epsilon_bound < epsilon:
             epsilon = max(epsilon - epsilon_degrade, epsilon_bound)
-        
-        if minibatch_cnt == minibatch_train:
-            break
 
 
         if done:
@@ -197,7 +202,6 @@ for epoch in range(max_epoch):
     prev_lives = 5
     eval_timestep = 0
     epi_rewards = []
-    epi_q_values = []
     q_value_sum = 0
     dead = False
 
@@ -205,7 +209,7 @@ for epoch in range(max_epoch):
         env.render()
         time.sleep(time_interval)
     
-    while True:
+    for eval_timestep in range(eval_max_timestep):
         if len(history) < 4:
             if len(history) < 1:
                 observation, _, _, _ = env.step(1) # Initial Fire
@@ -225,17 +229,20 @@ for epoch in range(max_epoch):
             dead = False
             continue
 
+
         ''' action selection '''
-        if torch.cuda.is_available():
-            output = model(state.cuda())
-        else:
-            output = model(state)
-        if random.random() < epsilon: 
-            action = random.randint(0, n_action-1)
-        else:
-            action = torch.argmax(output).item()
+        with torch.no_grad():
+            if torch.cuda.is_available():
+                output = model(state.cuda())
+            else:
+                output = model(state)
+            if random.random() < epsilon_eval: 
+                action = random.randint(0, n_action-1)
+            else:
+                action = torch.argmax(output).item()
+            q_value = torch.amax(output).item()
         real_action = action_map[action]
-        q_value = output[0, action].item()
+        
         q_value_sum += q_value
 
         ''' Environment update '''
@@ -254,25 +261,19 @@ for epoch in range(max_epoch):
 
         ''' Training parameter update '''
         prev_lives = info['lives']
-        eval_timestep += 1
-
-        if eval_timestep >= eval_max_timestep:
-            break     
-
 
         if done:
             history.clear()
             env.reset()
             prev_lives = 5
             epi_rewards.append(reward_sum)
-            epi_q_values.append(q_value_sum)
             reward_sum = 0
             continue
 
     avg_epi_rewards = sum(epi_rewards)/len(epi_rewards)
-    avg_epi_q_values = sum(epi_q_values)/len(epi_q_values)
-    print(f"[Validation] Epoch: {epoch}, episode reward: {avg_epi_rewards}, episode q_value: {avg_epi_q_values}, epsilon: {epsilon}")
-    eval_results.append((avg_epi_rewards, avg_epi_q_values))
+    avg_q_values = q_value_sum/eval_max_timestep
+    print(f"[Validate] Epoch: {epoch}, episode reward: {avg_epi_rewards}, max q_value: {avg_q_values}, epsilon: {epsilon}")
+    eval_results.append((avg_epi_rewards, avg_q_values))
 
 plt.plot(eval_results[0])
 plt.plot(eval_results[1])
