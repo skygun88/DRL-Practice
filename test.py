@@ -12,32 +12,57 @@ import torch.nn.functional as F
 from ale_py import ALEInterface
 from ale_py.roms import Breakout
 from PIL import Image
+from collections import deque
 from Model.dqn import DQN
+import gc
+import tracemalloc
+import psutil
+
+# def atari_preprocessing(observation: np.array):
+#     frame = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
+#     frame = cv2.resize(frame, (84, 110), interpolation = cv2.INTER_LINEAR)
+#     return torch.Tensor(frame[110-84:110, 0:84]/255)
+
+def memory_usage(message: str = 'debug'):
+    # current process RAM usage
+    p = psutil.Process()
+    return p.memory_info().rss / 2 ** 30 # Bytes to MB
+    
 
 
-def atari_preprocessing(state):
-    state_img = Image.fromarray(state).convert("L")
-    state_img = state_img.resize((84, 110))
-    state_img = state_img.crop((0, 110-84, 84, 110))
-    return torch.Tensor(np.array(state_img)/255)
+def atari_preprocessing(observation: np.array):
+    frame = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
+    resized_frame = cv2.resize(frame, (84, 110), interpolation = cv2.INTER_LINEAR)
+    return np.expand_dims(resized_frame[110-84:110, 0:84], axis=0)
+
+def history_to_tensor(history):
+    his_array = np.concatenate(history, axis=0)
+    unsqueezed = np.expand_dims(his_array, axis=0)
+    return torch.Tensor(unsqueezed/255)
 
 def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     optimizer.zero_grad()
-    states = torch.stack(list(map(lambda x: x[0], minibatch))).squeeze()
-    actions = list(map(lambda x: x[1], minibatch))
+    # states = torch.stack(list(map(lambda x: x[0], minibatch))).squeeze()
+    states = torch.cat([x[0] for x in minibatch], dim=0)
+    # actions = list(map(lambda x: x[1], minibatch))
+    actions = [x[1] for x in minibatch]
     one_hot_actions = F.one_hot(torch.tensor(actions), num_classes=3)
-    rewards = torch.tensor(list(map(lambda x: x[2], minibatch)))
-    next_states = torch.stack(list(map(lambda x: x[3], minibatch))).squeeze()
-    dones = torch.tensor(list(map(lambda x: 1 if x[4] == True or x[2] < 0 else 0, minibatch)))
+    # rewards = torch.tensor(list(map(lambda x: x[2], minibatch)))
+    rewards = torch.Tensor([x[2] for x in minibatch])
+    # next_states = torch.stack(list(map(lambda x: x[3], minibatch))).squeeze()
+    next_states = torch.cat([x[3] for x in minibatch], dim=0)
+    # dones = torch.Tensor(list(map(lambda x: 1 if x[4] == True or x[2] < 0 else 0, minibatch)))
+    dones = torch.Tensor([1 if x[4] == True or x[2] < 0 else 0 for x in minibatch])
 
     q_values = torch.sum(model(states.cuda())*one_hot_actions.cuda(), 1)
     ys = rewards.cuda() + (1-dones.cuda())*gamma*torch.amax(target_model(next_states.detach().cuda()).detach(), 1)
 
-    loss = torch.mean(torch.pow(ys-q_values, 2))
+    loss = torch.mean(torch.pow(ys.detach()-q_values, 2))
     loss.backward()
 
     optimizer.step()
-    return loss
+    del loss
+    return 
 
 def reward_processing(reward, dead):
     if reward > 0:
@@ -60,8 +85,8 @@ print(env.observation_space.dtype, env.observation_space._shape)
 
 max_timestep = 10000000
 max_epoch = 100
-replay_memory = []
 capacity = 50000
+replay_memory = deque([],maxlen=capacity)
 epsilon = 1
 epsilon_bound = 0.1
 epsilon_eval = 0.05
@@ -79,7 +104,7 @@ learning_rate = 0.0001
 gamma = 0.99
 target_interval = 10000
 n_action = env.action_space.n - 1
-history = [] # state - 4 skip frames
+history = deque([], maxlen=4)
 loss = 0
 loss_sum = 0
 q_values = 0 
@@ -92,9 +117,14 @@ target_model.load_state_dict(model.state_dict())
 optimizer = optim.RMSprop(model.parameters(), lr=learning_rate)
 eval_results = []
 
+
+tracemalloc.start(5)
+my_snapshot = None
+
+
 for epoch in range(max_epoch):
     ''' Training Phase '''
-    model.train()
+    # model.train()
     env.reset()
     history.clear()
     reward_sum = 0
@@ -105,30 +135,35 @@ for epoch in range(max_epoch):
     q_value_sum = 0 
     dead = False
 
+    time1 = tracemalloc.take_snapshot()
+
     if render:
         env.render()
         time.sleep(time_interval)
 
     while minibatch_cnt < minibatch_train:
-        if len(history) < 4:
-            if len(history) < 1:
-                observation, _, _, _ = env.step(1) # Initial Fire
-            else:
-                observation, _, _, _ = env.step(0)
+        if len(history) < 4:      
+            real_action = 1 if len(history) < 1 else 0
+            observation, _, _, _ = env.step(real_action)
             frame = atari_preprocessing(observation)
             history.append(frame)
+            state = history_to_tensor(history)
             continue
         
     
         if dead:
+            action = 0
+            real_action = 1
             observation, _, _, _ = env.step(1) # Initial Fire
             frame = atari_preprocessing(observation)
-            history.pop(0)
             history.append(frame)
             dead = False
+            state = history_to_tensor(history)
             continue
         
-        state = torch.stack(history, dim=0).unsqueeze(0)
+        # state = torch.stack(tuple(history), dim=0).unsqueeze(0)
+        
+        
 
         ''' action selection '''
         with torch.no_grad():
@@ -154,47 +189,63 @@ for epoch in range(max_epoch):
 
         ''' Next state '''
         frame = atari_preprocessing(observation)
-        history.pop(0)
         history.append(frame)
-        next_state = torch.stack(history, dim=0).unsqueeze(0)
+        # next_state = torch.stack(tuple(history), dim=0).unsqueeze(0)
+        
+        next_state = history_to_tensor(history)
         
         ''' Replay memory update '''
         replay_memory.append((state, action, reward, next_state, done))
-        if len(replay_memory) > capacity:
-            replay_memory.pop(0)
         
+
         if len(replay_memory) > train_start:
             minibatch = random.sample(replay_memory, minibatch_size)
-            loss = train_minibatch(model=model, target_model=target_model, minibatch=minibatch, optimizer=optimizer, gamma=gamma)
+            train_minibatch(model=model, target_model=target_model, minibatch=minibatch, optimizer=optimizer, gamma=gamma)
+            del minibatch
             minibatch_cnt += 1
-            loss_sum += loss
+
 
         ''' Training parameter update '''
         prev_lives = info['lives']
         timestep += 1
+        state = next_state
+
 
         if timestep % 1000 == 0:
-            print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}')
+            print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}, {len(history)}, {len(replay_memory)}')
             
         ''' target model update '''
         if timestep % target_interval == 0:
             target_model.load_state_dict(model.state_dict())
+            
+            time2 = tracemalloc.take_snapshot()
+            stats = time2.compare_to(time1, 'traceback')
+            rss = memory_usage()
+            print(f"memory usage: {rss: 10.5f} GiB")
+
+            for stat in stats[:8]:
+                print(stat)
+
+            print()
+            time1 = tracemalloc.take_snapshot()
 
         ''' epsilon update '''
         if epsilon_bound < epsilon:
             epsilon = max(epsilon - epsilon_degrade, epsilon_bound)
 
+        
 
         if done:
             history.clear()
             env.reset()
             prev_lives = 5
+            dead = False
             continue
 
     torch.save(model.state_dict(), f'Weight/DQN_breakout_{epoch}.pt')
 
     ''' Validation Phase '''
-    model.eval()
+    # model.eval()
     env.reset()
     history.clear()
     reward_sum = 0
@@ -210,20 +261,19 @@ for epoch in range(max_epoch):
     
     for eval_timestep in range(eval_max_timestep):
         if len(history) < 4:
-            if len(history) < 1:
-                observation, _, _, _ = env.step(1) # Initial Fire
-            else:
-                observation, _, _, _ = env.step(0)
+            real_action = 1 if len(history) < 1 else 0
+            observation, _, _, _ = env.step(real_action)
             frame = atari_preprocessing(observation)
             history.append(frame)
             continue
         
-        state = torch.stack(history, dim=0).unsqueeze(0)
+        # state = torch.stack(tuple(history), dim=0).unsqueeze(0)
+        
+        state = history_to_tensor(history)
 
         if dead:
             observation, _, _, _ = env.step(1) # Initial Fire
             frame = atari_preprocessing(observation)
-            history.pop(0)
             history.append(frame)
             dead = False
             continue
@@ -255,11 +305,11 @@ for epoch in range(max_epoch):
 
         ''' Next state '''
         frame = atari_preprocessing(observation)
-        history.pop(0)
         history.append(frame)
 
         ''' Training parameter update '''
         prev_lives = info['lives']
+        del state
 
         if done:
             history.clear()
@@ -267,6 +317,7 @@ for epoch in range(max_epoch):
             prev_lives = 5
             epi_rewards.append(reward_sum)
             reward_sum = 0
+            dead = False
             continue
 
     avg_epi_rewards = sum(epi_rewards)/len(epi_rewards)
@@ -274,9 +325,6 @@ for epoch in range(max_epoch):
     print(f"[Validate] Epoch: {epoch}, episode reward: {avg_epi_rewards}, max q_value: {avg_q_values}, epsilon: {epsilon}")
     eval_results.append((avg_epi_rewards, avg_q_values))
 
-plt.plot(eval_results[0])
-plt.plot(eval_results[1])
-plt.show()
 
 with open('output_log.csv', 'w') as f:
     text_string = list(map(lambda x: f'{x[0]}, {x[1]}', eval_results))
