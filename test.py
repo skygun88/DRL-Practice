@@ -15,25 +15,25 @@ from PIL import Image
 from Model.dqn import DQN
 from collections import deque
 
-def atari_preprocessing(state):
-    state_img = Image.fromarray(state).convert("L")
-    state_img = state_img.resize((84, 110))
-    state_img = state_img.crop((0, 110-84, 84, 110))
-    return torch.Tensor(np.array(state_img)/255)
+
+def atari_preprocessing(observation: np.array):
+    frame = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
+    resized_frame = cv2.resize(frame, (84, 110), interpolation = cv2.INTER_LINEAR)
+    return np.reshape(resized_frame[110-84:110, 0:84], (1,84,84))
 
 def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     optimizer.zero_grad()
-    states = torch.cat(list(map(lambda x: x[0], minibatch)), dim=0)
-    actions = list(map(lambda x: x[1], minibatch))
+    states = torch.cat([x[0] for x in minibatch], dim=0)
+    actions = [x[1] for x in minibatch]
     one_hot_actions = F.one_hot(torch.tensor(actions), num_classes=3)
-    rewards = torch.tensor(list(map(lambda x: x[2], minibatch)))
-    next_states = torch.cat(list(map(lambda x: x[3], minibatch)), dim=0)
-    dones = torch.tensor(list(map(lambda x: 1 if x[4] == True or x[2] < 0 else 0, minibatch)))
+    rewards = torch.Tensor([x[2] for x in minibatch])
+    next_states = torch.cat([x[3] for x in minibatch], dim=0)
+    dones = torch.Tensor([1 if x[4] == True or x[2] < 0 else 0 for x in minibatch])
 
     q_values = torch.sum(model(states.cuda())*one_hot_actions.cuda(), 1)
     ys = rewards.cuda() + (1-dones.cuda())*gamma*torch.amax(target_model(next_states.detach().cuda()).detach(), 1)
 
-    loss = torch.mean(torch.pow(ys-q_values, 2))
+    loss = torch.mean(torch.pow(ys.detach()-q_values, 2))
     loss.backward()
 
     optimizer.step()
@@ -79,7 +79,6 @@ learning_rate = 0.0001
 gamma = 0.99
 target_interval = 10000
 n_action = env.action_space.n - 1
-history = [] # state - 4 skip frames
 loss = 0
 loss_sum = 0
 q_values = 0 
@@ -96,7 +95,6 @@ for epoch in range(max_epoch):
     ''' Training Phase '''
     model.train()
     env.reset()
-    history.clear()
     reward_sum = 0
     prev_lives = 5
     timestep = 0
@@ -105,30 +103,18 @@ for epoch in range(max_epoch):
     q_value_sum = 0 
     dead = False
 
+
+    observation, _, _, _ = env.step(1)
+    frame = atari_preprocessing(observation)
+    history = np.concatenate((frame,frame,frame,frame), axis=0)    
+    state = torch.Tensor(history/255).unsqueeze(0)
+
+    
     if render:
         env.render()
         time.sleep(time_interval)
 
     while minibatch_cnt < minibatch_train:
-        if len(history) < 4:
-            real_action = 1 if len(history) < 1 else 0
-            observation, _, _, _ = env.step(real_action) # Initial Fire
-            frame = atari_preprocessing(observation)
-            history.append(frame)
-            if len(history) == 4:
-                state = torch.stack(history, dim=0).unsqueeze(0)
-            continue
-        
-    
-        if dead:
-            observation, _, _, _ = env.step(1) # Initial Fire
-            frame = atari_preprocessing(observation)
-            history.pop(0)
-            history.append(frame)
-            dead = False
-            state = torch.stack(history, dim=0).unsqueeze(0)
-            continue
-        
         
 
         ''' action selection '''
@@ -155,9 +141,9 @@ for epoch in range(max_epoch):
 
         ''' Next state '''
         frame = atari_preprocessing(observation)
-        history.pop(0)
-        history.append(frame)
-        next_state = torch.stack(history, dim=0).unsqueeze(0)
+        
+        history = np.append(history[1:, :, :], frame, axis=0)
+        next_state = torch.Tensor(history/255).unsqueeze(0)
         
         ''' Replay memory update '''
         replay_memory.append((state, action, reward, next_state, done))
@@ -184,12 +170,20 @@ for epoch in range(max_epoch):
         if epsilon_bound < epsilon:
             epsilon = max(epsilon - epsilon_degrade, epsilon_bound)
 
+        if dead:
+            observation, _, _, _ = env.step(1) # Initial Fire
+            frame = atari_preprocessing(observation)
+            history = np.append(history[1:, :, :], frame, axis=0)
+            dead = False
+            state = torch.Tensor(history/255).unsqueeze(0)
 
         if done:
-            history.clear()
             env.reset()
+            observation, _, _, _ = env.step(1)
+            frame = atari_preprocessing(observation)
+            history = np.concatenate((frame,frame,frame,frame), axis=0)
+            state = torch.Tensor(history/255).unsqueeze(0)
             prev_lives = 5
-            dead = False
             continue
 
     torch.save(model.state_dict(), f'Weight/DQN_breakout_{epoch}.pt')
@@ -197,7 +191,6 @@ for epoch in range(max_epoch):
     ''' Validation Phase '''
     model.eval()
     env.reset()
-    history.clear()
     reward_sum = 0
     prev_lives = 5
     eval_timestep = 0
@@ -205,30 +198,17 @@ for epoch in range(max_epoch):
     q_value_sum = 0
     dead = False
 
+    observation, _, _, _ = env.step(1)
+    frame = atari_preprocessing(observation)
+    history = np.concatenate((frame,frame,frame,frame), axis=0)    
+    
+
     if render:
         env.render()
         time.sleep(time_interval)
     
     for eval_timestep in range(eval_max_timestep):
-        if len(history) < 4:
-            if len(history) < 1:
-                observation, _, _, _ = env.step(1) # Initial Fire
-            else:
-                observation, _, _, _ = env.step(0)
-            frame = atari_preprocessing(observation)
-            history.append(frame)
-            continue
-        
-        state = torch.stack(history, dim=0).unsqueeze(0)
-
-        if dead:
-            observation, _, _, _ = env.step(1) # Initial Fire
-            frame = atari_preprocessing(observation)
-            history.pop(0)
-            history.append(frame)
-            dead = False
-            continue
-
+        state = torch.Tensor(history/255).unsqueeze(0)
 
         ''' action selection '''
         with torch.no_grad():
@@ -256,19 +236,27 @@ for epoch in range(max_epoch):
 
         ''' Next state '''
         frame = atari_preprocessing(observation)
-        history.pop(0)
-        history.append(frame)
+        history = np.append(history[1:, :, :], frame, axis=0)
 
         ''' Training parameter update '''
         prev_lives = info['lives']
 
+        if dead:
+            observation, _, _, _ = env.step(1) # Initial Fire
+            frame = atari_preprocessing(observation)
+            history = np.append(history[1:, :, :], frame, axis=0)
+            dead = False
+            state = torch.Tensor(history/255).unsqueeze(0)
+
         if done:
-            history.clear()
             env.reset()
+            observation, _, _, _ = env.step(1)
+            frame = atari_preprocessing(observation)
+            history = np.concatenate((frame,frame,frame,frame), axis=0)
+            state = torch.Tensor(history/255).unsqueeze(0)
             prev_lives = 5
             epi_rewards.append(reward_sum)
             reward_sum = 0
-            dead = False
             continue
 
     avg_epi_rewards = sum(epi_rewards)/len(epi_rewards)
