@@ -37,7 +37,7 @@ def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.R
     loss.backward()
 
     optimizer.step()
-    return loss
+    return loss.item()
 
 def reward_processing(reward, dead):
     if reward > 0:
@@ -111,12 +111,12 @@ for epoch in range(max_epoch):
 
     while minibatch_cnt < minibatch_train:
         if len(history) < 4:
-            if len(history) < 1:
-                observation, _, _, _ = env.step(1) # Initial Fire
-            else:
-                observation, _, _, _ = env.step(0)
+            real_action = 1 if len(history) < 1 else 0
+            observation, _, _, _ = env.step(real_action) # Initial Fire
             frame = atari_preprocessing(observation)
             history.append(frame)
+            if len(history) == 4:
+                state = torch.stack(history, dim=0).unsqueeze(0)
             continue
         
     
@@ -128,7 +128,7 @@ for epoch in range(max_epoch):
             dead = False
             continue
         
-        state = torch.stack(history, dim=0).unsqueeze(0)
+        
 
         ''' action selection '''
         with torch.no_grad():
@@ -172,6 +172,7 @@ for epoch in range(max_epoch):
         ''' Training parameter update '''
         prev_lives = info['lives']
         timestep += 1
+        state = next_state
 
         if timestep % 1000 == 0:
             print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}')
