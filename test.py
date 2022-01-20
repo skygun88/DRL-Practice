@@ -13,7 +13,7 @@ from ale_py import ALEInterface
 from ale_py.roms import Breakout
 from PIL import Image
 from Model.dqn import DQN
-
+from collections import deque
 
 def atari_preprocessing(state):
     state_img = Image.fromarray(state).convert("L")
@@ -23,11 +23,11 @@ def atari_preprocessing(state):
 
 def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     optimizer.zero_grad()
-    states = torch.stack(list(map(lambda x: x[0], minibatch))).squeeze()
+    states = torch.cat(list(map(lambda x: x[0], minibatch)), dim=0)
     actions = list(map(lambda x: x[1], minibatch))
     one_hot_actions = F.one_hot(torch.tensor(actions), num_classes=3)
     rewards = torch.tensor(list(map(lambda x: x[2], minibatch)))
-    next_states = torch.stack(list(map(lambda x: x[3], minibatch))).squeeze()
+    next_states = torch.cat(list(map(lambda x: x[3], minibatch)), dim=0)
     dones = torch.tensor(list(map(lambda x: 1 if x[4] == True or x[2] < 0 else 0, minibatch)))
 
     q_values = torch.sum(model(states.cuda())*one_hot_actions.cuda(), 1)
@@ -60,8 +60,8 @@ print(env.observation_space.dtype, env.observation_space._shape)
 
 max_timestep = 10000000
 max_epoch = 100
-replay_memory = []
 capacity = 50000
+replay_memory = deque([], maxlen=capacity)
 epsilon = 1
 epsilon_bound = 0.1
 epsilon_eval = 0.05
@@ -126,6 +126,7 @@ for epoch in range(max_epoch):
             history.pop(0)
             history.append(frame)
             dead = False
+            state = torch.stack(history, dim=0).unsqueeze(0)
             continue
         
         
@@ -160,8 +161,6 @@ for epoch in range(max_epoch):
         
         ''' Replay memory update '''
         replay_memory.append((state, action, reward, next_state, done))
-        if len(replay_memory) > capacity:
-            replay_memory.pop(0)
         
         if len(replay_memory) > train_start:
             minibatch = random.sample(replay_memory, minibatch_size)
@@ -190,6 +189,7 @@ for epoch in range(max_epoch):
             history.clear()
             env.reset()
             prev_lives = 5
+            dead = False
             continue
 
     torch.save(model.state_dict(), f'Weight/DQN_breakout_{epoch}.pt')
@@ -268,6 +268,7 @@ for epoch in range(max_epoch):
             prev_lives = 5
             epi_rewards.append(reward_sum)
             reward_sum = 0
+            dead = False
             continue
 
     avg_epi_rewards = sum(epi_rewards)/len(epi_rewards)
