@@ -52,7 +52,7 @@ images = []
 
 action_map = {0:0, 1:2, 2:3}
 model = DQN(n_action)
-model.load_state_dict(torch.load(f'Weight/DQN_breakout_99.pt'))
+model.load_state_dict(torch.load(f'Weight/DQN_breakout_76.pt'))
 model.eval()
 
 video = cv2.VideoWriter('output.mp4', cv2.VideoWriter_fourcc(*'mp4v'), 30, (160, 210))

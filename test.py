@@ -35,8 +35,7 @@ def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.R
 
     loss = torch.mean(torch.pow(ys-q_values, 2))
     loss.backward()
-    max_norm = 1.0
-    torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm)
+
     optimizer.step()
     return loss
 
@@ -178,7 +177,7 @@ for epoch in range(max_epoch):
             print(f'[Training] Epoch: {epoch}, Timestep: {timestep}, reward_sum = {reward_sum}')
             
         ''' target model update '''
-        if time_interval % target_interval:
+        if timestep % target_interval == 0:
             target_model.load_state_dict(model.state_dict())
 
         ''' epsilon update '''
