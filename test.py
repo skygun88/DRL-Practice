@@ -32,11 +32,11 @@ def atari_preprocessing(observation: np.array):
 def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     model.train()
     optimizer.zero_grad()
-    states = torch.Tensor(np.stack([x[0] for x in minibatch], axis=0)/255, device=device)
-    one_hot_actions = F.one_hot(torch.tensor([x[1] for x in minibatch], device=device), num_classes=3)
-    rewards = torch.Tensor([x[2] for x in minibatch], device=device)
-    next_states = torch.Tensor(np.stack([x[3] for x in minibatch], axis=0)/255, device=device)
-    dones = torch.Tensor([1 if x[4] == True or x[2] < 0 else 0 for x in minibatch], device=device)
+    states = torch.Tensor(np.stack([x[0] for x in minibatch], axis=0)/255).to(device=device)
+    one_hot_actions = F.one_hot(torch.tensor([x[1] for x in minibatch]).to(device=device), num_classes=3)
+    rewards = torch.Tensor([x[2] for x in minibatch]).to(device=device)
+    next_states = torch.Tensor(np.stack([x[3] for x in minibatch], axis=0)/255).to(device=device)
+    dones = torch.Tensor([1 if x[4] == True or x[2] < 0 else 0 for x in minibatch]).to(device=device)
 
     q_values = torch.sum(model(states)*one_hot_actions, 1)
     ys = rewards + (1-dones)*gamma*torch.amax(target_model(next_states.detach()).detach(), 1)
@@ -113,7 +113,7 @@ def main():
         frame = atari_preprocessing(observation)
         history = np.concatenate((frame,frame,frame,frame), axis=0) 
         next_history = np.zeros_like(history)
-        state = torch.Tensor(history/255, device=device).unsqueeze(0)
+        state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
         
         if render:
             env.render()
@@ -143,7 +143,7 @@ def main():
             frame = atari_preprocessing(observation)
             
             next_history = np.append(history[1:, :, :], frame, axis=0)
-            state = torch.Tensor(next_history/255, device=device).unsqueeze(0)
+            state = torch.Tensor(next_history/255).unsqueeze(0).to(device=device)
             
             ''' Replay memory update '''
             replay_memory.append((history, action, reward, next_history, done))
@@ -181,14 +181,14 @@ def main():
                 frame = atari_preprocessing(observation)
                 history = np.append(history[1:, :, :], frame, axis=0)
                 dead = False
-                state = torch.Tensor(history/255, device=device).unsqueeze(0)
+                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
 
             if done:
                 env.reset()
                 observation, _, _, _ = env.step(1)
                 frame = atari_preprocessing(observation)
                 history = np.concatenate((frame,frame,frame,frame), axis=0)
-                state = torch.Tensor(history/255, device=device).unsqueeze(0)
+                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
                 prev_lives = 5
                 continue
 
@@ -213,7 +213,7 @@ def main():
             time.sleep(time_interval)
         
         for _ in range(eval_max_timestep):
-            state = torch.Tensor(history/255, device=device).unsqueeze(0)
+            state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
 
             ''' action selection '''
             with torch.no_grad():
@@ -248,14 +248,14 @@ def main():
                 frame = atari_preprocessing(observation)
                 history = np.append(history[1:, :, :], frame, axis=0)
                 dead = False
-                state = torch.Tensor(history/255, device=device).unsqueeze(0)
+                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
 
             if done:
                 env.reset()
                 observation, _, _, _ = env.step(1)
                 frame = atari_preprocessing(observation)
                 history = np.concatenate((frame,frame,frame,frame), axis=0)
-                state = torch.Tensor(history/255, device=device).unsqueeze(0)
+                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
                 prev_lives = 5
                 epi_rewards.append(reward_sum)
                 reward_sum = 0
