@@ -18,17 +18,19 @@ from Model.dqn import DQN
 from utils import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-
-
+torch.backends.cudnn.benchmark = True
 
 
 def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     model.train()
-    
-    states = torch.Tensor(np.stack([x[0] for x in minibatch], axis=0)/255).to(device=device)
-    one_hot_actions = F.one_hot(torch.tensor([x[1] for x in minibatch]).to(device=device), num_classes=3)
+
+    # states = torch.Tensor(np.stack([x[0] for x in minibatch], axis=0)/255).to(device=device)
+    states = torch.as_tensor(np.stack([x[0] for x in minibatch], axis=0)/255, dtype=torch.float32).to(device=device)
+    # one_hot_actions = F.one_hot(torch.tensor([x[1] for x in minibatch]).to(device=device), num_classes=3)
+    one_hot_actions = F.one_hot(torch.tensor([x[1] for x in minibatch]).to(device=device), num_classes=4)
     rewards = torch.Tensor([x[2] for x in minibatch]).to(device=device)
-    next_states = torch.Tensor(np.stack([x[3] for x in minibatch], axis=0)/255).to(device=device)
+    # next_states = torch.Tensor(np.stack([x[3] for x in minibatch], axis=0)/255).to(device=device)
+    next_states = torch.as_tensor(np.stack([x[3] for x in minibatch], axis=0)/255, dtype=torch.float32).to(device=device)
     dones = torch.Tensor([1 if x[4] == True or x[2] < 0 else 0 for x in minibatch]).to(device=device)
     # dones = torch.Tensor([1 if x[4] == True else 0 for x in minibatch]).to(device=device)
 
@@ -40,10 +42,11 @@ def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.R
     criterion = nn.SmoothL1Loss()
     loss = criterion(q_values, ys)
 
-    optimizer.zero_grad()
+    optimizer.zero_grad(set_to_none=True)
     loss.backward()
-
     optimizer.step()
+
+
     model.eval()
     return loss.item()
 
@@ -52,10 +55,12 @@ def main():
     env = gym.make('BreakoutDeterministic-v4')
     env.reset()
 
-    print(env.action_space,env.observation_space.dtype, env.observation_space._shape)
+    # print(env.action_space,env.observation_space.dtype, env.observation_space._shape)
     
-    n_action = env.action_space.n - 1
-    action_map = {0:0, 1:2, 2:3}
+    # n_action = env.action_space.n - 1
+    # action_map = {0:0, 1:2, 2:3}
+    n_action = env.action_space.n
+    action_map = {0:0, 1:1, 2:2, 3:3}
     render = False
     time_interval = 0.01
 
@@ -98,12 +103,14 @@ def main():
         loss_sum = 0
         dead = False
 
-        observation, _, _, _ = env.step(1)
+        # observation, _, _, _ = env.step(1)
+        observation = env.reset()
         frame = atari_preprocessing(observation)
         history = np.concatenate((frame,frame,frame,frame), axis=0) 
         next_history = np.zeros_like(history)
-        state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
-        
+        # state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
+        state = torch.as_tensor(history/255, dtype=torch.float32).unsqueeze(0).to(device=device)
+
         if render:
             env.render()
             time.sleep(time_interval)
@@ -132,7 +139,8 @@ def main():
             frame = atari_preprocessing(observation)
             
             next_history = np.append(history[1:, :, :], frame, axis=0)
-            state = torch.Tensor(next_history/255).unsqueeze(0).to(device=device)
+            # state = torch.Tensor(next_history/255).unsqueeze(0).to(device=device)
+            state = torch.as_tensor(next_history/255, dtype=torch.float32).unsqueeze(0).to(device=device)
             
             ''' Replay memory update '''
             replay_memory.append((history, action, reward, next_history, done))
@@ -165,19 +173,15 @@ def main():
             if epsilon_bound < epsilon:
                 epsilon = max(epsilon - epsilon_degrade, epsilon_bound)
 
-            if dead:
-                observation, _, _, _ = env.step(1) # Initial Fire
-                frame = atari_preprocessing(observation)
-                history = np.append(history[1:, :, :], frame, axis=0)
-                dead = False
-                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
-
             if done:
-                env.reset()
-                observation, _, _, _ = env.step(1)
+                # env.reset()
+                # observation, _, _, _ = env.step(1)
+
+                observation = env.reset()
                 frame = atari_preprocessing(observation)
                 history = np.concatenate((frame,frame,frame,frame), axis=0)
-                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
+                # state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
+                state = torch.as_tensor(history/255, dtype=torch.float32).unsqueeze(0).to(device=device)
                 prev_lives = 5
                 continue
 
@@ -192,7 +196,8 @@ def main():
         q_value_sum = 0
         dead = False
 
-        observation, _, _, _ = env.step(1)
+        # observation, _, _, _ = env.step(1)
+        observation = env.reset()
         frame = atari_preprocessing(observation)
         history = np.concatenate((frame,frame,frame,frame), axis=0)    
         
@@ -231,16 +236,18 @@ def main():
             ''' Training parameter update '''
             prev_lives = info['lives']
 
-            if dead:
-                observation, _, _, _ = env.step(1) # Initial Fire
-                frame = atari_preprocessing(observation)
-                history = np.append(history[1:, :, :], frame, axis=0)
-                dead = False
-                state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
+            # if dead:
+            #     observation, _, _, _ = env.step(1) # Initial Fire
+            #     frame = atari_preprocessing(observation)
+            #     history = np.append(history[1:, :, :], frame, axis=0)
+            #     dead = False
+            #     state = torch.Tensor(history/255).unsqueeze(0).to(device=device)
 
             if done:
-                env.reset()
-                observation, _, _, _ = env.step(1)
+                # env.reset()
+                # observation, _, _, _ = env.step(1)
+
+                observation = env.reset()
                 frame = atari_preprocessing(observation)
                 history = np.concatenate((frame,frame,frame,frame), axis=0)
                 state = torch.Tensor(history/255).unsqueeze(0).to(device=device)

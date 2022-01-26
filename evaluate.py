@@ -25,8 +25,11 @@ def evaluate():
     eval_max_timestep = 10000
     render = False
     time_interval = 0.01
-    n_action = env.action_space.n - 1
-    action_map = {0:0, 1:2, 2:3}
+    # n_action = env.action_space.n - 1
+    # action_map = {0:0, 1:2, 2:3}
+
+    n_action = env.action_space.n 
+    action_map = {0:0, 1:1, 2:2, 3:3}
 
     model = DQN(n_action)
     model.load_state_dict(torch.load(f'Weight/DQN_breakout_99.pt'))
