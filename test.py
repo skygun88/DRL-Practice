@@ -1,71 +1,58 @@
-
-from re import A
 import sys
 import cv2
 import gym
 import time
 import random
+import psutil
 import numpy as np
-import matplotlib.pyplot as plt
 import torch
-import torch.optim as optim
+import torch.nn as nn
 import torch.nn.functional as F
+import torch.optim as optim
+import matplotlib.pyplot as plt
+from collections import deque
+from PIL import Image
 from ale_py import ALEInterface
 from ale_py.roms import Breakout
-from PIL import Image
 from Model.dqn import DQN
-from collections import deque
-import psutil
+from utils import *
 
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
 
 
-def memory_usage():
-    p = psutil.Process()
-    return p.memory_info().rss / 2 ** 20 # Bytes to MiB
 
-def atari_preprocessing(observation: np.array):
-    frame = cv2.cvtColor(observation, cv2.COLOR_BGR2GRAY)
-    resized_frame = cv2.resize(frame, (84, 110), interpolation = cv2.INTER_LINEAR)
-    return np.reshape(resized_frame[110-84:110, 0:84], (1,84,84))
 
 def train_minibatch(model: DQN, target_model: DQN, minibatch, optimizer: optim.RMSprop, gamma: float):
     model.train()
-    optimizer.zero_grad()
+    
     states = torch.Tensor(np.stack([x[0] for x in minibatch], axis=0)/255).to(device=device)
     one_hot_actions = F.one_hot(torch.tensor([x[1] for x in minibatch]).to(device=device), num_classes=3)
     rewards = torch.Tensor([x[2] for x in minibatch]).to(device=device)
     next_states = torch.Tensor(np.stack([x[3] for x in minibatch], axis=0)/255).to(device=device)
     dones = torch.Tensor([1 if x[4] == True or x[2] < 0 else 0 for x in minibatch]).to(device=device)
+    # dones = torch.Tensor([1 if x[4] == True else 0 for x in minibatch]).to(device=device)
 
     q_values = torch.sum(model(states)*one_hot_actions, 1)
     ys = rewards + (1-dones)*gamma*torch.amax(target_model(next_states.detach()).detach(), 1)
 
-    loss = torch.mean(torch.pow(ys.detach()-q_values, 2))
+    # loss = torch.mean(torch.pow(ys.detach()-q_values, 2))
+
+    criterion = nn.SmoothL1Loss()
+    loss = criterion(q_values, ys)
+
+    optimizer.zero_grad()
     loss.backward()
 
     optimizer.step()
     model.eval()
     return loss.item()
 
-def reward_processing(reward, dead):
-    if reward > 0:
-        return 1
-    if dead:
-        return -1
-    return 0
-
-def is_dead(info, prev_lives):
-    if info['lives'] < prev_lives:
-        return True
-    return False
 
 def main():
     env = gym.make('BreakoutDeterministic-v4')
     env.reset()
 
-    print(env.action_space)
-    print(env.observation_space.dtype, env.observation_space._shape)
+    print(env.action_space,env.observation_space.dtype, env.observation_space._shape)
     
     n_action = env.action_space.n - 1
     action_map = {0:0, 1:2, 2:3}
@@ -77,10 +64,12 @@ def main():
     max_epoch = 100
     capacity = 100000
     replay_memory = deque([], maxlen=capacity)
-    epsilon = 1
+    epsilon_start = 1
     epsilon_eval = 0.05
-    epsilon_bound = 0.1
-    epsilon_degrade = (1-0.1)/1000000
+    epsilon_bound = 0.01
+    epsilon_converge = 2000000
+    epsilon_degrade = (epsilon_start-epsilon_bound)/epsilon_converge
+    epsilon = epsilon_start
     minibatch_size = 32
     minibatch_train = 50000 # The number of minibatches trained an epoch
     train_start = 50000
@@ -207,7 +196,6 @@ def main():
         frame = atari_preprocessing(observation)
         history = np.concatenate((frame,frame,frame,frame), axis=0)    
         
-
         if render:
             env.render()
             time.sleep(time_interval)
@@ -263,7 +251,7 @@ def main():
 
         avg_epi_rewards = sum(epi_rewards)/len(epi_rewards)
         avg_q_values = q_value_sum/eval_max_timestep
-        print(f"[Validate] Epoch: {epoch}, episode reward: {avg_epi_rewards}, max q_value: {avg_q_values}, epsilon: {epsilon}")
+        print(f"[Validate] Epoch: {epoch}, episode reward: {avg_epi_rewards:.2f}, max q_value: {avg_q_values:.3f}, epsilon: {epsilon}")
         eval_results.append((avg_epi_rewards, avg_q_values))
 
     with open('output_log.csv', 'w') as f:
